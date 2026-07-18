@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 
@@ -23,6 +24,7 @@ import java.util.Locale;
 public final class TelloCli {
 
     private static final int DEFAULT_VIDEO_RELAY_PORT = 11112;
+    private static final Duration IDLE_KEEPALIVE_THRESHOLD = Duration.ofSeconds(10);
 
     public static void main(String[] args) throws Exception {
         int videoRelayPort = DEFAULT_VIDEO_RELAY_PORT;
@@ -43,6 +45,7 @@ public final class TelloCli {
         }
 
         Tello tello = new Tello();
+        tello.startIdleKeepAlive(IDLE_KEEPALIVE_THRESHOLD);
         TelloStateReceiver stateReceiver = new TelloStateReceiver();
         TelloVideoRelay[] videoRelay = new TelloVideoRelay[1];
 
@@ -82,6 +85,7 @@ public final class TelloCli {
 
     private static void runPlainConsole(Tello tello, TelloStateReceiver stateReceiver, TelloVideoRelay[] videoRelay,
             String videoRelayHost, int videoRelayPort, boolean recordVideo, BufferedReader in) throws Exception {
+        tello.onIdleKeepAlive(message -> System.out.println("\n" + message));
         printBanner(videoRelayHost, videoRelayPort);
 
         String line;

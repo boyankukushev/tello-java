@@ -118,6 +118,14 @@ final class Dashboard {
     }
 
     void run() throws IOException {
+        tello.onIdleKeepAlive(message -> {
+            appendHistory(message, AnsiTerminal.YELLOW);
+            redrawLeftPanel();
+        });
+
+        System.out.print(AnsiTerminal.ENTER_ALT_SCREEN);
+        System.out.flush();
+
         drawStatic();
         renderStats(stateReceiver.latestState());
         redrawLeftPanel();
@@ -125,7 +133,7 @@ final class Dashboard {
         Thread refresher = new Thread(() -> {
             while (running) {
                 try {
-                    Thread.sleep(3000);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;
@@ -143,7 +151,7 @@ final class Dashboard {
         } finally {
             running = false;
             refresher.interrupt();
-            System.out.print(AnsiTerminal.moveTo(rows, 1) + AnsiTerminal.RESET + "\n");
+            System.out.print(AnsiTerminal.EXIT_ALT_SCREEN);
             System.out.flush();
         }
     }
@@ -216,9 +224,11 @@ final class Dashboard {
     }
 
     private void appendHistory(String plainText, String color) {
-        history.addLast(color + AnsiTerminal.pad(plainText, leftWidth) + AnsiTerminal.RESET);
-        while (history.size() > historyHeight) {
-            history.removeFirst();
+        synchronized (screenLock) {
+            history.addLast(color + AnsiTerminal.pad(plainText, leftWidth) + AnsiTerminal.RESET);
+            while (history.size() > historyHeight) {
+                history.removeFirst();
+            }
         }
     }
 

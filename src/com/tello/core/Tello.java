@@ -2,7 +2,11 @@ package com.tello.core;
 
 import java.net.SocketException;
 import java.net.UnknownHostException;
+import java.time.Duration;
 import java.util.Locale;
+import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * High-level facade over the Tello SDK 1.3 command set (see the SDK documentation, section 4).
@@ -10,6 +14,8 @@ import java.util.Locale;
  * documented ranges before anything is sent over the network.
  */
 public final class Tello implements AutoCloseable {
+
+    private static final Logger LOG = Logger.getLogger(Tello.class.getName());
 
     private static final int MIN_DISTANCE = 20;
     private static final int MAX_DISTANCE = 500;
@@ -23,7 +29,13 @@ public final class Tello implements AutoCloseable {
     private static final int MAX_RC = 100;
     private static final int CURVE_DEAD_ZONE = 20;
 
+    /** Rotation used for the idle keep-alive nudge (see {@link #startIdleKeepAlive}): the SDK's minimum. */
+    private static final int KEEPALIVE_NUDGE_DEGREES = MIN_DEGREE;
+
     private final TelloConnection connection;
+    private volatile boolean flying = false;
+    private volatile Consumer<String> keepAliveListener;
+    private Thread keepAliveThread;
 
     public Tello() throws SocketException, UnknownHostException {
         this(new TelloConnection());
@@ -40,10 +52,12 @@ public final class Tello implements AutoCloseable {
 
     public void takeOff() {
         expectOk(connection.sendCommandAndWait("takeoff"));
+        flying = true;
     }
 
     public void land() {
         expectOk(connection.sendCommandAndWait("land"));
+        flying = false;
     }
 
     public void streamOn() {
@@ -56,6 +70,12 @@ public final class Tello implements AutoCloseable {
 
     public void emergency() {
         expectOk(connection.sendCommandAndWait("emergency"));
+        flying = false;
+    }
+
+    /** Whether {@link #takeOff()} has succeeded more recently than {@link #land()}/{@link #emergency()}. */
+    public boolean isFlying() {
+        return flying;
     }
 
     public void up(int cm) {
@@ -214,8 +234,65 @@ public final class Tello implements AutoCloseable {
         return Integer.parseInt(digits.toString());
     }
 
+    /** Registers a callback invoked with a short message each time an idle keep-alive nudge is sent. */
+    public void onIdleKeepAlive(Consumer<String> listener) {
+        this.keepAliveListener = listener;
+    }
+
+    /**
+     * Starts a background daemon thread that, whenever the aircraft has been flying (since the
+     * last successful {@link #takeOff()}, until {@link #land()}/{@link #emergency()}) with no
+     * command sent for {@code idleThreshold}, sends a small alternating cw/ccw rotation nudge to
+     * reset Tello's own 15-second no-command auto-land safety timer. Alternating direction keeps
+     * net rotation close to zero over each pair. Safe to call once; a second call is a no-op.
+     */
+    public synchronized void startIdleKeepAlive(Duration idleThreshold) {
+        if (keepAliveThread != null) {
+            return;
+        }
+        keepAliveThread = new Thread(() -> runIdleKeepAlive(idleThreshold), "tello-idle-keepalive");
+        keepAliveThread.setDaemon(true);
+        keepAliveThread.start();
+    }
+
+    private void runIdleKeepAlive(Duration idleThreshold) {
+        boolean nudgeClockwise = true;
+        while (true) {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (!flying || connection.timeSinceLastCommand().compareTo(idleThreshold) < 0) {
+                continue;
+            }
+            String direction = nudgeClockwise ? "cw" : "ccw";
+            try {
+                if (nudgeClockwise) {
+                    clockwise(KEEPALIVE_NUDGE_DEGREES);
+                } else {
+                    counterClockwise(KEEPALIVE_NUDGE_DEGREES);
+                }
+                nudgeClockwise = !nudgeClockwise;
+                String message = "No command for " + idleThreshold.toSeconds() + "s while flying; sent keep-alive "
+                        + direction + " " + KEEPALIVE_NUDGE_DEGREES + "deg to avoid Tello's 15s auto-land.";
+                LOG.info(message);
+                Consumer<String> listener = keepAliveListener;
+                if (listener != null) {
+                    listener.accept(message);
+                }
+            } catch (TelloException | IllegalArgumentException e) {
+                LOG.log(Level.WARNING, "idle keep-alive nudge failed", e);
+            }
+        }
+    }
+
     @Override
     public void close() {
+        if (keepAliveThread != null) {
+            keepAliveThread.interrupt();
+        }
         connection.close();
     }
 }

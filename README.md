@@ -18,6 +18,19 @@ Tello exposes three independent UDP channels once you're connected to its Wi-Fi 
 The first command sent must always be `command`, which puts the aircraft into SDK mode.
 If no command is received for 15 seconds, Tello lands automatically as a safety feature.
 
+### Idle keep-alive (avoiding the 15-second auto-land)
+
+Both consoles start a background thread (`Tello.startIdleKeepAlive`, called once in
+`TelloCli.main`) that watches how long it's been since *any* command was last sent to the
+aircraft. If it's been flying (since a successful `takeoff`, until `land`/`emergency`) with no
+command — manual or automatic — for 10 seconds, it sends a small alternating `cw`/`ccw` rotation
+nudge (1 degree each way) to reset Tello's own 15-second timer, leaving a 5-second safety margin.
+Alternating direction each time keeps net rotation close to zero over each pair rather than
+drifting one way. 1 degree is the SDK's actual minimum for `cw`/`ccw`, so no substitution is needed
+here (unlike a movement-based nudge, which would need at least 20cm — Tello's documented minimum
+for `left`/`right`/etc.). Each nudge is logged and, in the dashboard, also appended to the command
+history in yellow so it's clearly distinguishable from something you typed.
+
 ### Why there's a video relay instead of pointing a player straight at Tello
 
 Only one process can bind a given UDP port. Since this application is the one listening on
@@ -114,7 +127,7 @@ When run in a real, interactive terminal at least 32 rows by 90 columns, `tello-
 automatically to a full-screen dashboard: an ASCII "TELLO" banner and current configuration
 (addresses/ports) at the top, a command box on the left (colored history: cyan for the command
 you typed, green for success, yellow for an unrecognized command, red for errors), and a live
-flight-data panel on the right, refreshing every 3 seconds, with a static command reference below
+flight-data panel on the right, refreshing twice a second, with a static command reference below
 it. Piped/redirected input (including how this project's own testing has been done throughout)
 automatically falls back to the plain scrolling console instead — no ANSI codes, no terminal size
 requirement — so nothing about scripting or automation changes.
@@ -123,6 +136,15 @@ No raw terminal mode is used anywhere: the command box is a completely normal, l
 prompt (backspace and line editing behave exactly as your terminal already handles them). Only the
 right-hand flight panel updates on its own timer, using ANSI cursor save/move/restore so it never
 touches whatever you're mid-typing in the command box.
+
+The dashboard runs in the terminal's *alternate screen buffer* (the same mechanism vim/htop/less
+use), entered on start and exited on quit. This gives it a stable, scroll-isolated canvas: without
+it, a real scroll event (window resize, a mouse-wheel scroll, or any other interaction that shifts
+the terminal's actual scrollback) would desync the dashboard's fixed row positions from what's
+physically on screen, permanently, for the rest of the session — which is what caused the flight
+data panel to drift down over a long session and progressively overwrite the command help section.
+On exit, the terminal's original content and cursor position are restored automatically, exactly as
+they were before the dashboard started.
 
 Force one mode or the other with `--ui=dashboard` or `--ui=plain` (default `--ui=auto`, i.e. the
 terminal-detection behavior above). If the dashboard is requested but the terminal is smaller than

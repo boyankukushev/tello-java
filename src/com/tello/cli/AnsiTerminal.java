@@ -8,22 +8,36 @@ import java.util.Optional;
 /** ANSI escape-code helpers and terminal size detection for the dashboard console. */
 final class AnsiTerminal {
 
-    static final String RESET = "[0m";
-    static final String BOLD = "[1m";
-    static final String DIM = "[2m";
-    static final String CYAN = "[36m";
-    static final String GREEN = "[32m";
-    static final String RED = "[31m";
-    static final String YELLOW = "[33m";
-    static final String CLEAR_SCREEN = "[2J[H";
-    static final String SAVE_CURSOR = "7";
-    static final String RESTORE_CURSOR = "8";
+    private static final String ESC = "";
+
+    static final String RESET = ESC + "[0m";
+    static final String BOLD = ESC + "[1m";
+    static final String DIM = ESC + "[2m";
+    static final String CYAN = ESC + "[36m";
+    static final String GREEN = ESC + "[32m";
+    static final String RED = ESC + "[31m";
+    static final String YELLOW = ESC + "[33m";
+    static final String CLEAR_SCREEN = ESC + "[2J" + ESC + "[H";
+    static final String SAVE_CURSOR = ESC + "[s";
+    static final String RESTORE_CURSOR = ESC + "[u";
+
+    /**
+     * Switches to the terminal's alternate screen buffer: a stable, scroll-isolated canvas used by
+     * full-screen terminal apps (vim, htop, less, ...) so the app's absolute-position drawing never
+     * interacts with the user's normal scrollback (mouse-wheel scroll, window resize reflow, etc.),
+     * which would otherwise desync fixed on-screen rows from the fixed row numbers this class draws
+     * to, permanently, for the rest of the session.
+     */
+    static final String ENTER_ALT_SCREEN = ESC + "[?1049h";
+
+    /** Restores the terminal's original screen content and cursor position on exit. */
+    static final String EXIT_ALT_SCREEN = ESC + "[?1049l";
 
     private AnsiTerminal() {
     }
 
     static String moveTo(int row, int col) {
-        return "[" + row + ";" + col + "H";
+        return ESC + "[" + row + ";" + col + "H";
     }
 
     /** Pads or truncates plain (uncolored) text to exactly {@code width} visible columns. */
