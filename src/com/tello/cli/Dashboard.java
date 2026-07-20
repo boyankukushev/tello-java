@@ -16,14 +16,17 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
+import java.util.logging.Logger;
 
 /**
- * Full-screen live console: a header banner and configuration summary, a command box (left,
- * normal line-buffered input so terminal line editing works unmodified) and a flight-data panel
- * (right) that refreshes every 3 seconds. No raw terminal mode is used: the refresh thread only
- * ever touches the right panel's own rows/columns via ANSI save/move/write/restore-cursor, which
- * puts the cursor back exactly where the terminal's own line editor left it, so it never
- * interferes with whatever the user is mid-typing in the command box.
+ * Full-screen live console, each column split into two stacked boxes. Left: a COMMANDS box
+ * (normal line-buffered input, plus each typed command's own ok/error response) on top and a LOG
+ * box (background notices: video setup hints and anything logged via {@code java.util.logging})
+ * below it. Right: a static command reference on top and a FLIGHT DATA
+ * box (refreshes every 500ms) pinned to the bottom. No raw terminal mode is used: background
+ * writers only ever touch their own rows/columns via ANSI save/move/write/restore-cursor, which
+ * puts the cursor back exactly where the terminal's own line editor left it, so they never
+ * interfere with whatever the user is mid-typing in the COMMANDS box.
  */
 final class Dashboard {
 
@@ -39,6 +42,7 @@ final class Dashboard {
             {"command", "enter SDK mode"},
             {"takeoff / land", "auto takeoff / land"},
             {"emergency", "stop all motors now"},
+            {"stop", "stop moving, hover in place"},
             {"up/down/left/right x", "move x cm (20-500)"},
             {"forward/back x", "move x cm (20-500)"},
             {"cw/ccw x", "rotate x deg (1-3600)"},
@@ -58,7 +62,7 @@ final class Dashboard {
             {"acceleration?", "get acceleration"},
             {"tof?", "get ToF distance"},
             {"wifi?", "get Wi-Fi SNR"},
-            {"video / streamon", "start ffplay relay"},
+            {"video / streamon", "start ffplay/vlc relay"},
             {"streamoff", "stop video"},
             {"state", "flight data (this panel)"},
             {"help", "this list"},
@@ -79,15 +83,24 @@ final class Dashboard {
     private final int rightWidth;
     private final int rightStartCol;
     private final int panelTop;
+    private final int rightHelpTitleRow;
+    private final int rightHelpBottom;
+    private final int rightStatsTitleRow;
     private final int rightStatsTop;
-    private final int rightHelpTop;
+    private final int rightStatsHeight;
     private final int dividerBeforePromptRow;
     private final int promptRow;
+    private final int commandsTitleRow;
     private final int historyTop;
     private final int historyBottom;
     private final int historyHeight;
+    private final int logTitleRow;
+    private final int logTop;
+    private final int logBottom;
+    private final int logHeight;
 
     private final Deque<String> history = new ArrayDeque<>();
+    private final Deque<String> logLines = new ArrayDeque<>();
     private final Object screenLock = new Object();
     private volatile boolean running = true;
 
@@ -108,20 +121,37 @@ final class Dashboard {
         this.rightWidth = cols - 3 - leftWidth;
         this.rightStartCol = leftWidth + 4;
         this.panelTop = 11;
-        this.rightStatsTop = panelTop;
-        this.rightHelpTop = rightStatsTop + 1 + 11 + 1 + 1; // title, 11 stats, blank, "COMMANDS" title
         this.promptRow = rows - 1;
         this.dividerBeforePromptRow = promptRow - 1;
-        this.historyTop = panelTop;
-        this.historyBottom = dividerBeforePromptRow - 1;
+
+        // Right column: COMMANDS reference (static) on top, FLIGHT DATA box (live) pinned to the
+        // bottom, mirroring the left column's COMMANDS-over-LOG split below.
+        this.rightHelpTitleRow = panelTop;
+        this.rightStatsHeight = 11;
+        this.rightStatsTop = dividerBeforePromptRow - rightStatsHeight;
+        this.rightStatsTitleRow = rightStatsTop - 1;
+        this.rightHelpBottom = rightStatsTitleRow - 2; // leaves a blank separator row above the title
+
+        this.commandsTitleRow = panelTop;
+        this.historyTop = commandsTitleRow + 1;
+        int desiredLogHeight = Math.max(3, Math.min(8, (dividerBeforePromptRow - panelTop) / 4));
+        this.logBottom = dividerBeforePromptRow - 1;
+        this.logTop = logBottom - desiredLogHeight + 1;
+        this.logTitleRow = logTop - 1;
+        this.logHeight = Math.max(1, logBottom - logTop + 1);
+        this.historyBottom = logTitleRow - 2; // leaves a blank separator row above the LOG title
         this.historyHeight = Math.max(1, historyBottom - historyTop + 1);
     }
 
     void run() throws IOException {
-        tello.onIdleKeepAlive(message -> {
-            appendHistory(message, AnsiTerminal.YELLOW);
-            redrawLeftPanel();
+        Logger telloLogger = Logger.getLogger("com.tello");
+        boolean priorUseParentHandlers = telloLogger.getUseParentHandlers();
+        DashboardLogHandler logHandler = new DashboardLogHandler((message, color) -> {
+            appendLog(message, color);
+            redrawLogPanel();
         });
+        telloLogger.addHandler(logHandler);
+        telloLogger.setUseParentHandlers(false);
 
         System.out.print(AnsiTerminal.ENTER_ALT_SCREEN);
         System.out.flush();
@@ -129,6 +159,7 @@ final class Dashboard {
         drawStatic();
         renderStats(stateReceiver.latestState());
         redrawLeftPanel();
+        redrawLogPanel();
 
         Thread refresher = new Thread(() -> {
             while (running) {
@@ -149,6 +180,8 @@ final class Dashboard {
         try {
             mainLoop();
         } finally {
+            telloLogger.removeHandler(logHandler);
+            telloLogger.setUseParentHandlers(priorUseParentHandlers);
             running = false;
             refresher.interrupt();
             System.out.print(AnsiTerminal.EXIT_ALT_SCREEN);
@@ -205,11 +238,12 @@ final class Dashboard {
                     : null;
             InetSocketAddress target = TelloVideoRelay.target(videoRelayHost, videoRelayPort);
             videoRelay[0] = new TelloVideoRelay(TelloVideoRelay.DEFAULT_VIDEO_PORT, List.of(target), recording);
-            appendHistory("Run: ffplay -f h264 -fflags nobuffer -flags low_delay -i udp://@:" + videoRelayPort,
+            appendLog("Run: ffplay -f h264 -fflags nobuffer -flags low_delay -i udp://@:" + videoRelayPort,
                     AnsiTerminal.YELLOW);
-            appendHistory("Start ffplay BEFORE continuing, or it may miss the stream header.", AnsiTerminal.YELLOW);
-            redrawLeftPanel();
-            waitForEnter("Press Enter once ffplay is running and connected... ");
+            appendLog("Or: vlc udp://@:" + videoRelayPort + " :demux=h264", AnsiTerminal.YELLOW);
+            appendLog("Start ffplay/vlc BEFORE continuing, or it may miss the stream header.", AnsiTerminal.YELLOW);
+            redrawLogPanel();
+            waitForEnter("Press Enter once ffplay/vlc is running and connected... ");
         }
         tello.streamOn();
         appendHistory("Streaming.", AnsiTerminal.GREEN);
@@ -252,19 +286,47 @@ final class Dashboard {
         }
     }
 
+    private void appendLog(String plainText, String color) {
+        synchronized (screenLock) {
+            logLines.addLast(color + AnsiTerminal.pad(plainText, leftWidth) + AnsiTerminal.RESET);
+            while (logLines.size() > logHeight) {
+                logLines.removeFirst();
+            }
+        }
+    }
+
+    private void redrawLogPanel() {
+        synchronized (screenLock) {
+            StringBuilder sb = new StringBuilder();
+            sb.append(AnsiTerminal.SAVE_CURSOR);
+            List<String> lines = new ArrayList<>(logLines);
+            for (int i = 0; i < logHeight; i++) {
+                int row = logTop + i;
+                String content = i < lines.size() ? lines.get(i) : AnsiTerminal.pad("", leftWidth);
+                sb.append(AnsiTerminal.moveTo(row, 1)).append(content);
+            }
+            sb.append(AnsiTerminal.RESTORE_CURSOR);
+            System.out.print(sb);
+            System.out.flush();
+        }
+    }
+
     private void renderStats(TelloState state) {
         synchronized (screenLock) {
             StringBuilder sb = new StringBuilder();
             sb.append(AnsiTerminal.SAVE_CURSOR);
-            int row = rightStatsTop;
-            sb.append(AnsiTerminal.moveTo(row++, rightStartCol))
+            sb.append(AnsiTerminal.moveTo(rightStatsTitleRow, rightStartCol))
                     .append(AnsiTerminal.BOLD).append(AnsiTerminal.CYAN)
                     .append(AnsiTerminal.pad("FLIGHT DATA  (" + AnsiTerminal.time() + ")", rightWidth))
                     .append(AnsiTerminal.RESET);
-            row++; // blank separator row, left untouched
-            for (String[] field : statRows(state)) {
-                String formatted = String.format(Locale.ROOT, "%-9s%s", field[0], field[1]);
-                sb.append(AnsiTerminal.moveTo(row++, rightStartCol)).append(AnsiTerminal.pad(formatted, rightWidth));
+            List<String[]> fields = statRows(state);
+            for (int i = 0; i < rightStatsHeight; i++) {
+                int row = rightStatsTop + i;
+                String content = i < fields.size()
+                        ? AnsiTerminal.pad(String.format(Locale.ROOT, "%-9s%s", fields.get(i)[0], fields.get(i)[1]),
+                                rightWidth)
+                        : AnsiTerminal.pad("", rightWidth);
+                sb.append(AnsiTerminal.moveTo(row, rightStartCol)).append(content);
             }
             sb.append(AnsiTerminal.RESTORE_CURSOR);
             System.out.print(sb);
@@ -316,10 +378,15 @@ final class Dashboard {
         sb.append(AnsiTerminal.moveTo(10, 1)).append(AnsiTerminal.DIM)
                 .append(AnsiTerminal.repeat("-", cols)).append(AnsiTerminal.RESET);
 
-        int row = rightHelpTop;
+        sb.append(AnsiTerminal.moveTo(commandsTitleRow, 1)).append(AnsiTerminal.BOLD).append(AnsiTerminal.CYAN)
+                .append(AnsiTerminal.pad("COMMANDS", leftWidth)).append(AnsiTerminal.RESET);
+        sb.append(AnsiTerminal.moveTo(logTitleRow, 1)).append(AnsiTerminal.BOLD).append(AnsiTerminal.CYAN)
+                .append(AnsiTerminal.pad("LOG", leftWidth)).append(AnsiTerminal.RESET);
+
+        int row = rightHelpTitleRow;
         sb.append(AnsiTerminal.moveTo(row++, rightStartCol)).append(AnsiTerminal.BOLD).append(AnsiTerminal.CYAN)
                 .append(AnsiTerminal.pad("COMMANDS", rightWidth)).append(AnsiTerminal.RESET);
-        int helpRowsAvailable = Math.max(0, historyBottom - row + 1);
+        int helpRowsAvailable = Math.max(0, rightHelpBottom - row + 1);
         for (int i = 0; i < COMMAND_HELP.length && i < helpRowsAvailable; i++) {
             String formatted = String.format(Locale.ROOT, "%-18s%s", COMMAND_HELP[i][0], COMMAND_HELP[i][1]);
             sb.append(AnsiTerminal.moveTo(row++, rightStartCol)).append(AnsiTerminal.pad(formatted, rightWidth));

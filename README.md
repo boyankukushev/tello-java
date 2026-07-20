@@ -18,19 +18,6 @@ Tello exposes three independent UDP channels once you're connected to its Wi-Fi 
 The first command sent must always be `command`, which puts the aircraft into SDK mode.
 If no command is received for 15 seconds, Tello lands automatically as a safety feature.
 
-### Idle keep-alive (avoiding the 15-second auto-land)
-
-Both consoles start a background thread (`Tello.startIdleKeepAlive`, called once in
-`TelloCli.main`) that watches how long it's been since *any* command was last sent to the
-aircraft. If it's been flying (since a successful `takeoff`, until `land`/`emergency`) with no
-command — manual or automatic — for 10 seconds, it sends a small alternating `cw`/`ccw` rotation
-nudge (1 degree each way) to reset Tello's own 15-second timer, leaving a 5-second safety margin.
-Alternating direction each time keeps net rotation close to zero over each pair rather than
-drifting one way. 1 degree is the SDK's actual minimum for `cw`/`ccw`, so no substitution is needed
-here (unlike a movement-based nudge, which would need at least 20cm — Tello's documented minimum
-for `left`/`right`/etc.). Each nudge is logged and, in the dashboard, also appended to the command
-history in yellow so it's clearly distinguishable from something you typed.
-
 ### Why there's a video relay instead of pointing a player straight at Tello
 
 Only one process can bind a given UDP port. Since this application is the one listening on
@@ -62,16 +49,23 @@ Connect your computer to the Tello's Wi-Fi network before running.
 
 ## Viewing the video stream
 
-**Why not VLC:** since VLC 3.0, its `udp://` input reads raw (non-MPEG-TS) UDP in fixed
-1316-byte (7×188) chunks — a hardcoded MPEG-TS-over-UDP convention with no supported override.
-Tello's H.264 packets run close to Ethernet MTU (~1460 bytes), so nearly every packet gets
-truncated, corrupting NAL units. This shows up as `udp stream error: ... packet truncated` and
-`h26x demux error: this doesn't look like a h264 ES stream`, and forces the decoder to wait for
-the next keyframe to resync after almost every packet — the usual cause of multi-second stalls
-or, with an aggressively low `--network-caching`, a full buffer-deadlock collapse. None of this is
-fixable from the VLC command line for a raw elementary stream, so this project uses `ffplay`
-(bundled with ffmpeg) instead, which doesn't have this limitation. Install it with
-`apt install ffmpeg` / `brew install ffmpeg` if you don't already have it.
+This project documents `ffplay` (bundled with ffmpeg) as the primary way to view the stream.
+Install it with `apt install ffmpeg` / `brew install ffmpeg` if you don't already have it.
+
+**Using VLC instead:** since VLC 3.0, its `udp://` input defaults to reading raw UDP in fixed
+1316-byte (7×188) chunks — a hardcoded MPEG-TS-over-UDP convention. Tello's H.264 packets run
+close to Ethernet MTU (~1460 bytes), so without any override nearly every packet gets truncated,
+corrupting NAL units (`udp stream error: ... packet truncated`, `h26x demux error: this doesn't
+look like a h264 ES stream`). Forcing VLC's raw H.264 demuxer instead of relying on that
+MPEG-TS-over-UDP assumption avoids this:
+
+```
+vlc udp://@:11112 :demux=h264
+```
+
+With `:demux=h264` set, a `main input error: ES_OUT_SET_(GROUP_)PCR is called too late (pts_delay
+increased to 1000 ms)` message is expected and benign for this raw elementary stream — it isn't a
+sign of failure.
 
 1. In the console, type `command` then `video` (or `streamon`). The console will print the
    `ffplay` command and then **wait for you to press Enter** before actually telling Tello to
@@ -107,14 +101,14 @@ fixable from the VLC command line for a raw elementary stream, so this project u
 ## Console commands
 
 ```
-Control:   command takeoff land emergency streamon streamoff
+Control:   command takeoff land emergency stop streamon streamoff
 Movement:  up x | down x | left x | right x | forward x | back x   (x: 20-500 cm)
 Rotation:  cw x | ccw x                                            (x: 1-3600 deg)
 Flip:      flip l|r|f|b
-Go/Curve:  go x y z speed | curve x1 y1 z1 x2 y2 z2 speed
+Go/Curve:  go x y z speed | curve x1 y1 z1 x2 y2 z2 speed         (x/y/z: ±20-500 cm, speed: 10-100)
 Set:       speed x (10-100) | rc a b c d (-100..100) | wifi ssid pass
 Read:      speed? battery? time? height? temp? attitude? baro? acceleration? tof? wifi?
-Extra:     video (start ffplay relay) | state (print telemetry) | help | end
+Extra:     video (start ffplay/vlc relay) | state (print telemetry) | help | end
 ```
 
 `rc a b c d` (left/right, forward/backward, up/down, yaw, each -100..100) is fire-and-forget by
@@ -125,26 +119,36 @@ practical.
 
 When run in a real, interactive terminal at least 32 rows by 90 columns, `tello-java` switches
 automatically to a full-screen dashboard: an ASCII "TELLO" banner and current configuration
-(addresses/ports) at the top, a command box on the left (colored history: cyan for the command
-you typed, green for success, yellow for an unrecognized command, red for errors), and a live
-flight-data panel on the right, refreshing twice a second, with a static command reference below
-it. Piped/redirected input (including how this project's own testing has been done throughout)
-automatically falls back to the plain scrolling console instead — no ANSI codes, no terminal size
-requirement — so nothing about scripting or automation changes.
+(addresses/ports) at the top; a left column split into a COMMANDS box (colored history: cyan for
+the command you typed, green for success, yellow for an unrecognized command, red for errors) on
+top and a LOG box below it (video setup hints and anything reported via
+`java.util.logging`, kept out of the COMMANDS box so it never gets mixed in with actual command
+responses); and on the right, a static command reference on top with a live flight-data box (its
+own bounded panel, refreshing twice a second) pinned to the bottom, mirroring the left column's
+COMMANDS-over-LOG split. Piped/redirected input (including how this project's own testing has been
+done throughout) automatically falls back to the plain scrolling console instead — no ANSI codes,
+no terminal size requirement — so nothing about scripting or automation changes.
 
-No raw terminal mode is used anywhere: the command box is a completely normal, line-buffered
-prompt (backspace and line editing behave exactly as your terminal already handles them). Only the
-right-hand flight panel updates on its own timer, using ANSI cursor save/move/restore so it never
-touches whatever you're mid-typing in the command box.
+No raw terminal mode is used anywhere: the COMMANDS box is a completely normal, line-buffered
+prompt (backspace and line editing behave exactly as your terminal already handles them). The
+flight-data box and the LOG box update on their own via background threads/callbacks, using ANSI
+cursor save/move/restore so they never touch whatever you're mid-typing in the COMMANDS box; both
+redraw their entire fixed row range on every update (blank-padding unused rows) rather than only
+writing however many lines happen to be available, so stale content can't linger at a box's edges.
+`Tello`/`TelloConnection`/`TelloStateReceiver`/`TelloVideoRelay`'s loggers are redirected into the
+LOG box for the duration of the dashboard session (instead of the JVM's default handler writing
+raw, unpositioned text straight to the terminal) so they can't corrupt the layout — see the next
+paragraph for what that corruption used to look like.
 
 The dashboard runs in the terminal's *alternate screen buffer* (the same mechanism vim/htop/less
 use), entered on start and exited on quit. This gives it a stable, scroll-isolated canvas: without
 it, a real scroll event (window resize, a mouse-wheel scroll, or any other interaction that shifts
 the terminal's actual scrollback) would desync the dashboard's fixed row positions from what's
-physically on screen, permanently, for the rest of the session — which is what caused the flight
-data panel to drift down over a long session and progressively overwrite the command help section.
-On exit, the terminal's original content and cursor position are restored automatically, exactly as
-they were before the dashboard started.
+physically on screen, permanently, for the rest of the session — which is what used to happen
+whenever a log message got written straight to the terminal (e.g. the video relay starting up),
+causing the flight data panel to drift down over a long session and
+progressively overwrite the command help section. On exit, the terminal's original content and
+cursor position are restored automatically, exactly as they were before the dashboard started.
 
 Force one mode or the other with `--ui=dashboard` or `--ui=plain` (default `--ui=auto`, i.e. the
 terminal-detection behavior above). If the dashboard is requested but the terminal is smaller than
@@ -152,8 +156,8 @@ terminal-detection behavior above). If the dashboard is requested but the termin
 console rather than drawing a broken layout.
 
 The `video`/`streamon` confirm-before-streaming step (see above) works the same way in the
-dashboard: the `ffplay` command appears in the command box's history, and you press Enter there
-once it's running, exactly as in the plain console.
+dashboard: the `ffplay`/`vlc` commands appear in the LOG box, and you press Enter at the prompt
+once one of them is running, exactly as in the plain console.
 
 ## Project layout
 

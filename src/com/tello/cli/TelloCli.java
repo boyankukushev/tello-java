@@ -13,7 +13,6 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 
@@ -24,7 +23,6 @@ import java.util.Locale;
 public final class TelloCli {
 
     private static final int DEFAULT_VIDEO_RELAY_PORT = 11112;
-    private static final Duration IDLE_KEEPALIVE_THRESHOLD = Duration.ofSeconds(10);
 
     public static void main(String[] args) throws Exception {
         int videoRelayPort = DEFAULT_VIDEO_RELAY_PORT;
@@ -45,7 +43,6 @@ public final class TelloCli {
         }
 
         Tello tello = new Tello();
-        tello.startIdleKeepAlive(IDLE_KEEPALIVE_THRESHOLD);
         TelloStateReceiver stateReceiver = new TelloStateReceiver();
         TelloVideoRelay[] videoRelay = new TelloVideoRelay[1];
 
@@ -85,7 +82,6 @@ public final class TelloCli {
 
     private static void runPlainConsole(Tello tello, TelloStateReceiver stateReceiver, TelloVideoRelay[] videoRelay,
             String videoRelayHost, int videoRelayPort, boolean recordVideo, BufferedReader in) throws Exception {
-        tello.onIdleKeepAlive(message -> System.out.println("\n" + message));
         printBanner(videoRelayHost, videoRelayPort);
 
         String line;
@@ -114,10 +110,11 @@ public final class TelloCli {
                             System.out.println("In another terminal, start:");
                             System.out.println("  ffplay -f h264 -fflags nobuffer -flags low_delay -i udp://@:"
                                     + videoRelayPort);
-                            System.out.println("Tello sends its stream header only once, so ffplay needs to "
+                            System.out.println("Or: vlc udp://@:" + videoRelayPort + " :demux=h264");
+                            System.out.println("Tello sends its stream header only once, so ffplay/vlc needs to "
                                     + "already be listening before streaming starts, or it may show a garbled "
                                     + "picture until the next resync.");
-                            System.out.print("Press Enter once ffplay is running and connected... ");
+                            System.out.print("Press Enter once ffplay/vlc is running and connected... ");
                             in.readLine();
                         }
                         tello.streamOn();
@@ -163,6 +160,10 @@ public final class TelloCli {
             }
             case "emergency" -> {
                 tello.emergency();
+                yield "ok";
+            }
+            case "stop" -> {
+                tello.stop();
                 yield "ok";
             }
             case "up" -> {
@@ -272,21 +273,21 @@ public final class TelloCli {
         System.out.println("""
                 Tello Java Console
                 Type 'command' to enter SDK mode, then 'takeoff', 'land', etc.
-                Type 'video' or 'streamon' to start the video relay for ffplay (%s:%d).
+                Type 'video' or 'streamon' to start the video relay for ffplay/vlc (%s:%d).
                 Type 'state' to print the latest telemetry, 'help' for the command list, 'end' to quit.
                 """.formatted(videoRelayHost, videoRelayPort));
     }
 
     private static void printHelp() {
         System.out.println("""
-                Control:   command takeoff land emergency streamon streamoff
+                Control:   command takeoff land emergency stop streamon streamoff
                 Movement:  up x | down x | left x | right x | forward x | back x   (x: 20-500 cm)
                 Rotation:  cw x | ccw x                                            (x: 1-3600 deg)
                 Flip:      flip l|r|f|b
-                Go/Curve:  go x y z speed | curve x1 y1 z1 x2 y2 z2 speed
+                Go/Curve:  go x y z speed | curve x1 y1 z1 x2 y2 z2 speed         (x/y/z: ±20-500 cm, speed: 10-100)
                 Set:       speed x (10-100) | rc a b c d (-100..100) | wifi ssid pass
                 Read:      speed? battery? time? height? temp? attitude? baro? acceleration? tof? wifi?
-                Extra:     video (start ffplay relay) | state (print telemetry) | help | end
+                Extra:     video (start ffplay/vlc relay) | state (print telemetry) | help | end
                 """);
     }
 }
