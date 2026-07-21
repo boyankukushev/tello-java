@@ -2,7 +2,10 @@ package com.tello.core;
 
 import java.net.SocketException;
 import java.net.UnknownHostException;
+import java.time.Duration;
 import java.util.Locale;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * High-level facade over the Tello SDK 1.3 command set (see the SDK documentation, section 4).
@@ -10,6 +13,8 @@ import java.util.Locale;
  * documented ranges before anything is sent over the network.
  */
 public final class Tello implements AutoCloseable {
+
+    private static final Logger LOG = Logger.getLogger(Tello.class.getName());
 
     private static final int MIN_DISTANCE = 20;
     private static final int MAX_DISTANCE = 500;
@@ -19,12 +24,11 @@ public final class Tello implements AutoCloseable {
     private static final int MAX_SPEED = 100;
     private static final int MIN_CURVE_SPEED = 10;
     private static final int MAX_CURVE_SPEED = 60;
-    private static final int MIN_RC = -100;
-    private static final int MAX_RC = 100;
     private static final int CURVE_DEAD_ZONE = 20;
 
     private final TelloConnection connection;
     private volatile boolean flying = false;
+    private Thread keepAliveThread;
 
     public Tello() throws SocketException, UnknownHostException {
         this(new TelloConnection());
@@ -57,17 +61,7 @@ public final class Tello implements AutoCloseable {
         expectOk(connection.sendCommandAndWait("streamoff"));
     }
 
-    public void emergency() {
-        expectOk(connection.sendCommandAndWait("emergency"));
-        flying = false;
-    }
-
-    /** Stop moving and hover immediately. */
-    public void stop() {
-        expectOk(connection.sendCommandAndWait("stop"));
-    }
-
-    /** Whether {@link #takeOff()} has succeeded more recently than {@link #land()}/{@link #emergency()}. */
+    /** Whether {@link #takeOff()} has succeeded more recently than {@link #land()}. */
     public boolean isFlying() {
         return flying;
     }
@@ -109,9 +103,9 @@ public final class Tello implements AutoCloseable {
     }
 
     public void go(int x, int y, int z, int speed) {
-        requireSignedDistance(x, "x");
-        requireSignedDistance(y, "y");
-        requireSignedDistance(z, "z");
+        requireRange(x, -MAX_DISTANCE, MAX_DISTANCE, "x");
+        requireRange(y, -MAX_DISTANCE, MAX_DISTANCE, "y");
+        requireRange(z, -MAX_DISTANCE, MAX_DISTANCE, "z");
         requireRange(speed, MIN_SPEED, MAX_SPEED, "speed");
         expectOk(connection.sendCommandAndWait(String.format(Locale.ROOT, "go %d %d %d %d", x, y, z, speed)));
     }
@@ -127,19 +121,6 @@ public final class Tello implements AutoCloseable {
     public void setSpeed(int cmPerSecond) {
         requireRange(cmPerSecond, MIN_SPEED, MAX_SPEED, "speed");
         expectOk(connection.sendCommandAndWait("speed " + cmPerSecond));
-    }
-
-    /**
-     * Sends RC control values without waiting for a response. Real-world RC control is a
-     * continuous stream (e.g. from a joystick), so this deliberately does not block on the
-     * per-command "ok" that the documentation's table implies for consistency with other commands.
-     */
-    public void sendRc(int leftRight, int forwardBackward, int upDown, int yaw) {
-        requireRange(leftRight, MIN_RC, MAX_RC, "leftRight");
-        requireRange(forwardBackward, MIN_RC, MAX_RC, "forwardBackward");
-        requireRange(upDown, MIN_RC, MAX_RC, "upDown");
-        requireRange(yaw, MIN_RC, MAX_RC, "yaw");
-        connection.sendCommand(String.format(Locale.ROOT, "rc %d %d %d %d", leftRight, forwardBackward, upDown, yaw));
     }
 
     public void setWifi(String ssid, String password) {
@@ -196,16 +177,6 @@ public final class Tello implements AutoCloseable {
         return requireRange(value, MIN_DISTANCE, MAX_DISTANCE, "distance");
     }
 
-    /** Like {@link #requireDistance}, but permits negative values (magnitude 20-500), as {@code go} allows. */
-    private static int requireSignedDistance(int value, String name) {
-        int magnitude = Math.abs(value);
-        if (magnitude < MIN_DISTANCE || magnitude > MAX_DISTANCE) {
-            throw new IllegalArgumentException(
-                    name + " must have a magnitude between " + MIN_DISTANCE + " and " + MAX_DISTANCE + " but was " + value);
-        }
-        return value;
-    }
-
     private static int requireDegree(int value) {
         return requireRange(value, MIN_DEGREE, MAX_DEGREE, "degree");
     }
@@ -238,8 +209,41 @@ public final class Tello implements AutoCloseable {
         return Integer.parseInt(digits.toString());
     }
 
+    /** Starts a daemon thread that resends {@code command} if the aircraft is flying and idle. */
+    public synchronized void startIdleKeepAlive(Duration idleThreshold) {
+        if (keepAliveThread != null) {
+            return;
+        }
+        keepAliveThread = new Thread(() -> runIdleKeepAlive(idleThreshold), "tello-idle-keepalive");
+        keepAliveThread.setDaemon(true);
+        keepAliveThread.start();
+    }
+
+    private void runIdleKeepAlive(Duration idleThreshold) {
+        while (true) {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (!flying || connection.timeSinceLastCommand().compareTo(idleThreshold) < 0) {
+                continue;
+            }
+            try {
+                connect();
+                LOG.fine("No command for " + idleThreshold.toSeconds() + "s while flying; resent 'command' as keep-alive.");
+            } catch (TelloException e) {
+                LOG.log(Level.WARNING, "idle keep-alive resend failed", e);
+            }
+        }
+    }
+
     @Override
     public void close() {
+        if (keepAliveThread != null) {
+            keepAliveThread.interrupt();
+        }
         connection.close();
     }
 }

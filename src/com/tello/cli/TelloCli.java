@@ -3,7 +3,6 @@ package com.tello.cli;
 import com.tello.core.FlipDirection;
 import com.tello.core.Tello;
 import com.tello.core.TelloException;
-import com.tello.core.TelloState;
 import com.tello.core.TelloStateReceiver;
 import com.tello.video.TelloVideoRelay;
 
@@ -13,6 +12,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 
@@ -23,6 +23,7 @@ import java.util.Locale;
 public final class TelloCli {
 
     private static final int DEFAULT_VIDEO_RELAY_PORT = 11112;
+    private static final Duration IDLE_KEEPALIVE_THRESHOLD = Duration.ofSeconds(10);
 
     public static void main(String[] args) throws Exception {
         int videoRelayPort = DEFAULT_VIDEO_RELAY_PORT;
@@ -43,6 +44,7 @@ public final class TelloCli {
         }
 
         Tello tello = new Tello();
+        tello.startIdleKeepAlive(IDLE_KEEPALIVE_THRESHOLD);
         TelloStateReceiver stateReceiver = new TelloStateReceiver();
         TelloVideoRelay[] videoRelay = new TelloVideoRelay[1];
 
@@ -66,10 +68,10 @@ public final class TelloCli {
             } else {
                 System.out.println("Terminal too small or size undetectable for the dashboard (need at least "
                         + Dashboard.MIN_ROWS + "x" + Dashboard.MIN_COLS + "), using the plain console.");
-                runPlainConsole(tello, stateReceiver, videoRelay, videoRelayHost, videoRelayPort, recordVideo, in);
+                runPlainConsole(tello, videoRelay, videoRelayHost, videoRelayPort, recordVideo, in);
             }
         } else {
-            runPlainConsole(tello, stateReceiver, videoRelay, videoRelayHost, videoRelayPort, recordVideo, in);
+            runPlainConsole(tello, videoRelay, videoRelayHost, videoRelayPort, recordVideo, in);
         }
 
         if (videoRelay[0] != null) {
@@ -80,7 +82,7 @@ public final class TelloCli {
         System.out.println("Bye.");
     }
 
-    private static void runPlainConsole(Tello tello, TelloStateReceiver stateReceiver, TelloVideoRelay[] videoRelay,
+    private static void runPlainConsole(Tello tello, TelloVideoRelay[] videoRelay,
             String videoRelayHost, int videoRelayPort, boolean recordVideo, BufferedReader in) throws Exception {
         printBanner(videoRelayHost, videoRelayPort);
 
@@ -98,8 +100,6 @@ public final class TelloCli {
 
             try {
                 switch (input.toLowerCase(Locale.ROOT)) {
-                    case "help" -> printHelp();
-                    case "state" -> printState(stateReceiver.latestState());
                     case "video", "streamon" -> {
                         if (videoRelay[0] == null) {
                             FileOutputStream recording = recordVideo
@@ -158,14 +158,6 @@ public final class TelloCli {
                 tello.land();
                 yield "ok";
             }
-            case "emergency" -> {
-                tello.emergency();
-                yield "ok";
-            }
-            case "stop" -> {
-                tello.stop();
-                yield "ok";
-            }
             case "up" -> {
                 tello.up(intArg(parts, 1));
                 yield "ok";
@@ -215,10 +207,6 @@ public final class TelloCli {
                 tello.setSpeed(intArg(parts, 1));
                 yield "ok";
             }
-            case "rc" -> {
-                tello.sendRc(intArg(parts, 1), intArg(parts, 2), intArg(parts, 3), intArg(parts, 4));
-                yield "";
-            }
             case "wifi" -> {
                 tello.setWifi(stringArg(parts, 1), stringArg(parts, 2));
                 yield "ok";
@@ -233,7 +221,7 @@ public final class TelloCli {
             case "acceleration?" -> String.valueOf(tello.getAcceleration());
             case "tof?" -> String.valueOf(tello.getTof());
             case "wifi?" -> tello.getWifiSnr();
-            default -> "Unknown command: " + cmd + " (type 'help' for the command list)";
+            default -> "Unknown command: " + cmd;
         };
     }
 
@@ -265,29 +253,12 @@ public final class TelloCli {
         };
     }
 
-    private static void printState(TelloState state) {
-        System.out.println(state == null ? "No state received yet." : state);
-    }
-
     private static void printBanner(String videoRelayHost, int videoRelayPort) {
         System.out.println("""
                 Tello Java Console
                 Type 'command' to enter SDK mode, then 'takeoff', 'land', etc.
                 Type 'video' or 'streamon' to start the video relay for ffplay/vlc (%s:%d).
-                Type 'state' to print the latest telemetry, 'help' for the command list, 'end' to quit.
+                Type 'end' to quit.
                 """.formatted(videoRelayHost, videoRelayPort));
-    }
-
-    private static void printHelp() {
-        System.out.println("""
-                Control:   command takeoff land emergency stop streamon streamoff
-                Movement:  up x | down x | left x | right x | forward x | back x   (x: 20-500 cm)
-                Rotation:  cw x | ccw x                                            (x: 1-3600 deg)
-                Flip:      flip l|r|f|b
-                Go/Curve:  go x y z speed | curve x1 y1 z1 x2 y2 z2 speed         (x/y/z: ±20-500 cm, speed: 10-100)
-                Set:       speed x (10-100) | rc a b c d (-100..100) | wifi ssid pass
-                Read:      speed? battery? time? height? temp? attitude? baro? acceleration? tof? wifi?
-                Extra:     video (start ffplay/vlc relay) | state (print telemetry) | help | end
-                """);
     }
 }

@@ -3,13 +3,9 @@ ISSUES
 
 Dashboard
 ---------
-* FLIGHT DATA section keeps overflowing over commands list
+* FLIGHT DATA header is repeated on several lines -- happens occasionally when there's an error in the communication with the aircraft
 
 Video
 -----
-* VLC is better again, should add description what to run
-
-Keep-Alive
-----------
-* Doesn't seem to work with `cw/ccw 1`, review
+* VLC error: [000076976c000c90] main input error: ES_OUT_SET_(GROUP_)PCR  is called too late (pts_delay increased to 1000 ms)
 

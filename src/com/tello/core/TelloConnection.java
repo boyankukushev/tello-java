@@ -38,6 +38,7 @@ public final class TelloConnection implements AutoCloseable {
     private final ReentrantLock commandLock = new ReentrantLock();
     private final Thread receiverThread;
     private volatile boolean running = true;
+    private volatile long lastCommandNanos = System.nanoTime();
 
     public TelloConnection() throws SocketException, UnknownHostException {
         this(DEFAULT_LOCAL_PORT, DEFAULT_TELLO_HOST, DEFAULT_TELLO_PORT);
@@ -101,12 +102,9 @@ public final class TelloConnection implements AutoCloseable {
         }
     }
 
-    /**
-     * Fire-and-forget send, used for high-frequency commands such as {@code rc} that are streamed
-     * continuously; waiting for a per-command response would make joystick-style control unusable.
-     */
-    public void sendCommand(String command) {
-        send(command);
+    /** Time elapsed since the last command was sent to the aircraft (of any kind, on any thread). */
+    public Duration timeSinceLastCommand() {
+        return Duration.ofNanos(System.nanoTime() - lastCommandNanos);
     }
 
     private void send(String command) {
@@ -115,6 +113,7 @@ public final class TelloConnection implements AutoCloseable {
         try {
             LOG.fine(() -> ">> " + command);
             socket.send(packet);
+            lastCommandNanos = System.nanoTime();
         } catch (IOException e) {
             throw new TelloException("Failed to send command '" + command + "'", e);
         }

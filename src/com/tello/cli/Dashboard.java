@@ -33,6 +33,9 @@ final class Dashboard {
     static final int MIN_ROWS = 32;
     static final int MIN_COLS = 90;
 
+    private static final int RIGHT_PANEL_EXTRA_WIDTH = 10;
+    private static final int COMMAND_LABEL_WIDTH = 22;
+
     private static final String[] GLYPH_T = {"#####", "  #  ", "  #  ", "  #  ", "  #  "};
     private static final String[] GLYPH_E = {"#####", "#    ", "#### ", "#    ", "#####"};
     private static final String[] GLYPH_L = {"#    ", "#    ", "#    ", "#    ", "#####"};
@@ -41,16 +44,13 @@ final class Dashboard {
     private static final String[][] COMMAND_HELP = {
             {"command", "enter SDK mode"},
             {"takeoff / land", "auto takeoff / land"},
-            {"emergency", "stop all motors now"},
-            {"stop", "stop moving, hover in place"},
             {"up/down/left/right x", "move x cm (20-500)"},
             {"forward/back x", "move x cm (20-500)"},
             {"cw/ccw x", "rotate x deg (1-3600)"},
             {"flip l/r/f/b", "flip in place"},
-            {"go x y z speed", "fly to point (10-100)"},
+            {"go x y z speed", "fly to point (-500..500, 10-100)"},
             {"curve ...", "fly a curve (speed 10-60)"},
             {"speed x", "set speed cm/s (10-100)"},
-            {"rc a b c d", "RC control (-100..100)"},
             {"wifi ssid pass", "change Wi-Fi"},
             {"speed?", "get speed"},
             {"battery?", "get battery %"},
@@ -64,8 +64,6 @@ final class Dashboard {
             {"wifi?", "get Wi-Fi SNR"},
             {"video / streamon", "start ffplay/vlc relay"},
             {"streamoff", "stop video"},
-            {"state", "flight data (this panel)"},
-            {"help", "this list"},
             {"end/exit/quit", "quit"},
     };
 
@@ -117,7 +115,9 @@ final class Dashboard {
 
         this.rows = size.rows();
         this.cols = size.cols();
-        this.leftWidth = (int) ((cols - 3) * 0.65);
+        // Shift roughly a tab's worth of columns from the left panel to the right so the command
+        // reference has room for its longest label ("up/down/left/right x") without truncating.
+        this.leftWidth = (int) ((cols - 3) * 0.65) - RIGHT_PANEL_EXTRA_WIDTH;
         this.rightWidth = cols - 3 - leftWidth;
         this.rightStartCol = leftWidth + 4;
         this.panelTop = 11;
@@ -204,9 +204,6 @@ final class Dashboard {
             appendHistory("> " + input, AnsiTerminal.CYAN);
             try {
                 switch (input.toLowerCase(Locale.ROOT)) {
-                    case "help" -> appendHistory("See the command list in the right panel.", AnsiTerminal.GREEN);
-                    case "state" -> appendHistory(
-                            "See flight data in the right panel (updates every 3s).", AnsiTerminal.GREEN);
                     case "video", "streamon" -> handleVideoOn();
                     case "streamoff" -> {
                         tello.streamOff();
@@ -337,20 +334,20 @@ final class Dashboard {
     private static List<String[]> statRows(TelloState s) {
         if (s == null) {
             return List.of(
-                    new String[] {"Battery", "--"}, new String[] {"Time", "--"}, new String[] {"ToF", "--"},
-                    new String[] {"Temp", "--"}, new String[] {"Baro", "--"}, new String[] {"Speed", "--"},
-                    new String[] {"Accel", "--"}, new String[] {"Height", "--"}, new String[] {"Pitch", "--"},
+                    new String[] {"Battery", "--"}, new String[] {"Time", "--"}, new String[] {"Height", "--"},
+                    new String[] {"ToF", "--"}, new String[] {"Temp", "--"}, new String[] {"Baro", "--"},
+                    new String[] {"Speed", "--"}, new String[] {"Accel", "--"}, new String[] {"Pitch", "--"},
                     new String[] {"Roll", "--"}, new String[] {"Yaw", "--"});
         }
         return List.of(
                 new String[] {"Battery", s.bat() + "%"},
                 new String[] {"Time", s.time() + "s"},
+                new String[] {"Height", s.h() + "cm"},
                 new String[] {"ToF", s.tof() + "cm"},
                 new String[] {"Temp", s.templ() + "-" + s.temph() + "C"},
                 new String[] {"Baro", String.format(Locale.ROOT, "%.2f", s.baro())},
                 new String[] {"Speed", String.format(Locale.ROOT, "(%d,%d,%d)", s.vgx(), s.vgy(), s.vgz())},
                 new String[] {"Accel", String.format(Locale.ROOT, "(%.2f,%.2f,%.2f)", s.agx(), s.agy(), s.agz())},
-                new String[] {"Height", s.h() + "cm"},
                 new String[] {"Pitch", String.valueOf(s.pitch())},
                 new String[] {"Roll", String.valueOf(s.roll())},
                 new String[] {"Yaw", String.valueOf(s.yaw())});
@@ -388,7 +385,8 @@ final class Dashboard {
                 .append(AnsiTerminal.pad("COMMANDS", rightWidth)).append(AnsiTerminal.RESET);
         int helpRowsAvailable = Math.max(0, rightHelpBottom - row + 1);
         for (int i = 0; i < COMMAND_HELP.length && i < helpRowsAvailable; i++) {
-            String formatted = String.format(Locale.ROOT, "%-18s%s", COMMAND_HELP[i][0], COMMAND_HELP[i][1]);
+            String formatted = String.format(Locale.ROOT, "%-" + COMMAND_LABEL_WIDTH + "s%s",
+                    COMMAND_HELP[i][0], COMMAND_HELP[i][1]);
             sb.append(AnsiTerminal.moveTo(row++, rightStartCol)).append(AnsiTerminal.pad(formatted, rightWidth));
         }
 

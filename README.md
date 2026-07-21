@@ -16,7 +16,9 @@ Tello exposes three independent UDP channels once you're connected to its Wi-Fi 
 | Video    | Tello → PC                          | 11111 | Raw H.264 elementary stream, pushed after `streamon`   |
 
 The first command sent must always be `command`, which puts the aircraft into SDK mode.
-If no command is received for 15 seconds, Tello lands automatically as a safety feature.
+If no command is received for 15 seconds, Tello lands automatically as a safety feature. To avoid
+tripping this while flying, `tello-java` runs a background idle keep-alive: if 10 seconds pass with
+no command sent while the aircraft is flying, it resends `command` to reset Tello's timer.
 
 ### Why there's a video relay instead of pointing a player straight at Tello
 
@@ -101,19 +103,16 @@ sign of failure.
 ## Console commands
 
 ```
-Control:   command takeoff land emergency stop streamon streamoff
+Control:   command takeoff land streamon streamoff
 Movement:  up x | down x | left x | right x | forward x | back x   (x: 20-500 cm)
 Rotation:  cw x | ccw x                                            (x: 1-3600 deg)
 Flip:      flip l|r|f|b
-Go/Curve:  go x y z speed | curve x1 y1 z1 x2 y2 z2 speed         (x/y/z: ±20-500 cm, speed: 10-100)
-Set:       speed x (10-100) | rc a b c d (-100..100) | wifi ssid pass
+Go:        go x y z speed                                          (x/y/z: -500 to 500 cm, speed: 10-100)
+Curve:     curve x1 y1 z1 x2 y2 z2 speed                            (speed: 10-60)
+Set:       speed x (10-100) | wifi ssid pass
 Read:      speed? battery? time? height? temp? attitude? baro? acceleration? tof? wifi?
-Extra:     video (start ffplay/vlc relay) | state (print telemetry) | help | end
+Extra:     video (start ffplay/vlc relay) | end
 ```
-
-`rc a b c d` (left/right, forward/backward, up/down, yaw, each -100..100) is fire-and-forget by
-design: real RC control is a continuous stream, so waiting for a response per packet isn't
-practical.
 
 ## Dashboard console
 
